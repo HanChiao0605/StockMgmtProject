@@ -15,6 +15,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from streamlit_gsheets import GSheetsConnection
 #python -m streamlit run futures_asset_app.py
 # --- 1. 全域設定 ---
 st.set_page_config(page_title="期貨資產報告", layout="wide", page_icon="🤖")
@@ -76,19 +77,31 @@ def get_futures_price_selenium(driver, url):
 class FuturesManager:
     @staticmethod
     def load_data():
-        if not os.path.exists(FUTURES_PORTFOLIO_CSV_FILENAME):
-            st.error(f"找不到 '{FUTURES_PORTFOLIO_CSV_FILENAME}'。")
-            return None, None
         try:
-            df_portfolio = pd.read_csv(FUTURES_PORTFOLIO_CSV_FILENAME)
-            if os.path.exists(FUTURES_ASSET_CSV_FILENAME):
-                df_asset = pd.read_csv(FUTURES_ASSET_CSV_FILENAME)
-            else:
-                df_asset = pd.DataFrame(columns=['日期', '總價值'])
+            # .streamlit/secrets.toml
+            # st.write(st.secrets)
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            # st.write(conn.read(worksheet=0, ttl=0))
+            # st.write(conn.read(worksheet=1, ttl=0))
+            df_portfolio = conn.read(worksheet=0, ttl=0)
+            df_asset = conn.read(worksheet=1, ttl=0)
             return df_portfolio, df_asset
         except Exception as e:
-            st.error(f"讀取 CSV 錯誤: {e}")
-            return None, None
+            st.error(f"無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
+        return pd.DataFrame() # 回傳空表避免後面程式碼報錯
+        # if not os.path.exists(FUTURES_PORTFOLIO_CSV_FILENAME):
+        #     st.error(f"找不到 '{FUTURES_PORTFOLIO_CSV_FILENAME}'。")
+        #     return None, None
+        # try:
+        #     df_portfolio = pd.read_csv(FUTURES_PORTFOLIO_CSV_FILENAME)
+        #     if os.path.exists(FUTURES_ASSET_CSV_FILENAME):
+        #         df_asset = pd.read_csv(FUTURES_ASSET_CSV_FILENAME)
+        #     else:
+        #         df_asset = pd.DataFrame(columns=['日期', '總價值'])
+        #     return df_portfolio, df_asset
+        # except Exception as e:
+        #     st.error(f"讀取 CSV 錯誤: {e}")
+        #     return None, None
 
     @staticmethod
     def _generate_ticker_code(row):
@@ -120,7 +133,6 @@ class FuturesManager:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
         ]
-            
         options = webdriver.ChromeOptions()
         options.add_argument(f"user-agent={random.choice(user_agents)}")
         options.add_argument('--ignore-certificate-errors')
@@ -131,9 +143,9 @@ class FuturesManager:
         options.add_argument('--enable-unsafe-swiftshader')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-
         try:
-            service = ChromeService(ChromeDriverManager().install())
+            # service = ChromeService(ChromeDriverManager().install())
+            service = ChromeService("/usr/bin/chromedriver")
             driver = webdriver.Chrome(service=service, options=options)
             driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
@@ -265,13 +277,14 @@ class FuturesManager:
     @staticmethod
     def save_data(original_df_raw, result_df, current_asset_value, df_asset_history):
         try:
+            # .streamlit/secrets.toml
+            conn = st.connection("gsheets", type=GSheetsConnection)
             # 1. 更新 Portfolio (回填最新報價)
             if '最新報價' not in original_df_raw.columns:
                 original_df_raw['最新報價'] = 0.0
             
             original_df_raw.iloc[1:, original_df_raw.columns.get_loc('最新報價')] = result_df['最新報價'].values
-            
-            original_df_raw.to_csv(FUTURES_PORTFOLIO_CSV_FILENAME, index=False, encoding='utf-8')
+            conn.update(worksheet=0, data=original_df_raw)
 
             # 2. 更新 Asset History
             today_str = datetime.now().strftime("%Y/%m/%d")
@@ -285,8 +298,7 @@ class FuturesManager:
                 msg = f"已新增今日 ({today_str}) 資產紀錄"
 
             df_asset_history.sort_values('日期', inplace=True)
-            df_asset_history.to_csv(FUTURES_ASSET_CSV_FILENAME, index=False, encoding='utf-8')
-
+            conn.update(worksheet=1, data=df_asset_history)
             return True, msg
         except Exception as e:
             return False, f"儲存失敗: {e}"

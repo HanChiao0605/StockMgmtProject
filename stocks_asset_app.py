@@ -7,11 +7,12 @@ import yfinance as yf
 from decimal import Decimal, getcontext, ROUND_HALF_UP, InvalidOperation
 import plotly.express as px
 import os
+from streamlit_gsheets import GSheetsConnection
 # 執行指令: python -m streamlit run stocks_asset_app.py
 # --- 1. 全域設定 ---
 getcontext().prec = 28
-STOCKS_PORTFOLIO_CSV = 'stocks_portfolio.csv'
-STOCKS_ASSET_CSV = 'stocks_asset_value.csv'
+STOCKS_PORTFOLIO = 'stocks_portfolio'
+STOCKS_ASSET = 'stocks_asset_value'
 
 # 設定頁面資訊
 st.set_page_config(
@@ -47,24 +48,36 @@ def safe_div(a: Decimal, b: Decimal) -> Decimal:
 class PortfolioManager:
     @staticmethod
     def load_data():
-        """讀取 CSV 檔案，若無檔案則回傳 None"""
-        if not os.path.exists(STOCKS_PORTFOLIO_CSV):
-            st.error(f"找不到 '{STOCKS_PORTFOLIO_CSV}'，請確認檔案位置。")
-            return None, None
-        
         try:
-            df_portfolio = pd.read_csv(STOCKS_PORTFOLIO_CSV)
-            
-            # 確保資產歷史檔存在，若無則建立空的
-            if os.path.exists(STOCKS_ASSET_CSV):
-                df_asset = pd.read_csv(STOCKS_ASSET_CSV)
-            else:
-                df_asset = pd.DataFrame(columns=['日期', '總價值'])
-            
+            # .streamlit/secrets.toml
+            # st.write(st.secrets)
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            # st.write(conn.read(worksheet=0, ttl=0))
+            # st.write(conn.read(worksheet=1, ttl=0))
+            df_portfolio = conn.read(worksheet=2, ttl=0)
+            df_asset = conn.read(worksheet=3, ttl=0)
             return df_portfolio, df_asset
         except Exception as e:
-            st.error(f"讀取 CSV 錯誤: {e}")
-            return None, None
+            st.error(f"無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
+        return pd.DataFrame() # 回傳空表避免後面程式碼報錯
+        # """讀取 CSV 檔案，若無檔案則回傳 None"""
+        # if not os.path.exists(STOCKS_PORTFOLIO):
+        #     st.error(f"找不到 '{STOCKS_PORTFOLIO}'，請確認檔案位置。")
+        #     return None, None
+        
+        # try:
+        #     df_portfolio = pd.read_csv(STOCKS_PORTFOLIO)
+            
+        #     # 確保資產歷史檔存在，若無則建立空的
+        #     if os.path.exists(STOCKS_ASSET):
+        #         df_asset = pd.read_csv(STOCKS_ASSET)
+        #     else:
+        #         df_asset = pd.DataFrame(columns=['日期', '總價值'])
+            
+        #     return df_portfolio, df_asset
+        # except Exception as e:
+        #     st.error(f"讀取 CSV 錯誤: {e}")
+        #     return None, None
 
     @staticmethod
     @st.cache_data(ttl=60, show_spinner=False)
@@ -197,13 +210,16 @@ class PortfolioManager:
     def save_data(original_df_raw, result_df, current_total_assets, df_asset_history):
         """將最新報價與總資產寫回 CSV"""
         try:
+            # .streamlit/secrets.toml
+            conn = st.connection("gsheets", type=GSheetsConnection)
+
             # 1. 更新 Portfolio CSV (回填最新報價)
             if '最新報價' not in original_df_raw.columns:
                 original_df_raw['最新報價'] = 0.0
 
             # 假設順序一致 (因為是用 iloc[1:] 切分)，直接回填 values
             original_df_raw.loc[1:, '最新報價'] = result_df['最新報價'].values
-            original_df_raw.to_csv(STOCKS_PORTFOLIO_CSV, index=False, encoding='utf-8-sig')
+            conn.update(worksheet=2, data=original_df_raw)
 
             # 2. 更新資產歷史 CSV
             today_str = datetime.now().strftime("%Y/%m/%d")
@@ -218,8 +234,8 @@ class PortfolioManager:
                 action_msg = f"已新增今日 ({today_str}) 資產紀錄"
             
             df_asset_history.sort_values('日期', inplace=True)
-            df_asset_history.to_csv(STOCKS_ASSET_CSV, index=False, encoding='utf-8-sig')
-            
+            conn.update(worksheet=3, data=df_asset_history)
+
             return True, action_msg
         except Exception as e:
             return False, f"儲存失敗: {e}"

@@ -7,12 +7,13 @@ import yfinance as yf
 from decimal import Decimal, getcontext, ROUND_HALF_UP, InvalidOperation
 import plotly.express as px
 import os
+from streamlit_gsheets import GSheetsConnection
 # 執行指令: python -m streamlit run stocks_asset_app_US.py
 # --- 1. 全域設定 ---
 getcontext().prec = 28
 # 設定檔案名稱 (美股版)
-STOCKS_PORTFOLIO_CSV = 'stocks_portfolio_US.csv'
-STOCKS_ASSET_CSV = 'stocks_asset_value_US.csv'
+STOCKS_PORTFOLIO = 'stocks_portfolio_US'
+STOCKS_ASSET = 'stocks_asset_value_US'
 
 st.set_page_config(
     page_title="美股持倉報告 (US Stocks)", 
@@ -42,19 +43,28 @@ def safe_div(a: Decimal, b: Decimal) -> Decimal:
 class PortfolioManager:
     @staticmethod
     def load_data():
-        if not os.path.exists(STOCKS_PORTFOLIO_CSV):
-            st.error(f"找不到 '{STOCKS_PORTFOLIO_CSV}'，請確認檔案位置。")
-            return None, None
         try:
-            df_portfolio = pd.read_csv(STOCKS_PORTFOLIO_CSV)
-            if os.path.exists(STOCKS_ASSET_CSV):
-                df_asset = pd.read_csv(STOCKS_ASSET_CSV)
-            else:
-                df_asset = pd.DataFrame(columns=['日期', '總價值'])
+            # .streamlit/secrets.toml
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            df_portfolio = conn.read(worksheet=4, ttl="0")
+            df_asset = conn.read(worksheet=5, ttl="0")
             return df_portfolio, df_asset
         except Exception as e:
-            st.error(f"讀取 CSV 錯誤: {e}")
-            return None, None
+            st.error(f"無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
+        return df_portfolio, df_asset
+        # if not os.path.exists(STOCKS_PORTFOLIO):
+        #     st.error(f"找不到 '{STOCKS_PORTFOLIO}'，請確認檔案位置。")
+        #     return None, None
+        # try:
+        #     df_portfolio = pd.read_csv(STOCKS_PORTFOLIO)
+        #     if os.path.exists(STOCKS_ASSET):
+        #         df_asset = pd.read_csv(STOCKS_ASSET)
+        #     else:
+        #         df_asset = pd.DataFrame(columns=['日期', '總價值'])
+        #     return df_portfolio, df_asset
+        # except Exception as e:
+        #     st.error(f"讀取 CSV 錯誤: {e}")
+        #     return None, None
 
     @staticmethod
     @st.cache_data(ttl=60, show_spinner=False)
@@ -153,10 +163,11 @@ class PortfolioManager:
     def save_data(original_df_raw, result_df, current_total_assets, df_asset_history):
         try:
             # 1. 更新 Portfolio
+            conn = st.connection("gsheets", type=GSheetsConnection)
             if '最新報價' not in original_df_raw.columns:
                 original_df_raw['最新報價'] = 0.0
             original_df_raw.loc[1:, '最新報價'] = result_df['最新報價'].values
-            original_df_raw.to_csv(STOCKS_PORTFOLIO_CSV, index=False, encoding='utf-8-sig')
+            conn.update(worksheet=4, data=original_df_raw)
 
             # 2. 更新 Asset History
             today_str = datetime.now().strftime("%Y/%m/%d")
@@ -169,7 +180,7 @@ class PortfolioManager:
                 msg = f"已新增今日 ({today_str}) 資產紀錄"
             
             df_asset_history.sort_values('日期', inplace=True)
-            df_asset_history.to_csv(STOCKS_ASSET_CSV, index=False, encoding='utf-8-sig')
+            conn.update(worksheet=5, data=df_asset_history)
             return True, msg
         except Exception as e:
             return False, f"儲存失敗: {e}"
