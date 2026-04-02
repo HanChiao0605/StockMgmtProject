@@ -8,101 +8,107 @@ import os
 import random
 import time as time_lib
 
-# --- Selenium 相關引用 (保持不變) ---
+# --- Selenium 相關引用 ---
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from streamlit_gsheets import GSheetsConnection
-from zoneinfo import ZoneInfo
-#python -m streamlit run futures_asset_app.py
-# --- 1. 全域設定 ---
-st.set_page_config(page_title="期貨資產報告", layout="wide", page_icon="🤖")
 
-FUTURES_PORTFOLIO_CSV_FILENAME = 'futures_portfolio.csv'
-FUTURES_ASSET_CSV_FILENAME = 'futures_asset_value.csv'
+import gspread
+import toml
+from zoneinfo import ZoneInfo
+
+# --- 1. 全域設定 ---
 EQITY_THRESHOLD = 6000
-ASSET_UNIT = 10000 #10k per unit
-# 定義每個期貨對應的 URL (保持不變)
+ASSET_UNIT = 10000 # 10k per unit
+
 FUTURES_URLS = {
     '大台': 'https://www.wantgoo.com/futures/wtx&',
     '小台': 'https://www.wantgoo.com/futures/wmt&',
     '微台': 'https://www.wantgoo.com/futures/wtmp&'
 }
 
-# --- [修改] 保證金設定 (包含原始與維持) ---
-# 結構: '名稱': {'Initial': 原始保證金, 'Maintenance': 維持保證金}
-# 數值僅供參考，請依期交所最新公告更新
+# --- 保證金設定 (包含原始與維持) ---
 MARGIN_CONFIG = {
     '大台': {'Initial': 374000, 'Maintenance': 287000},
     '小台': {'Initial': 93500,  'Maintenance': 71750},
     '微台': {'Initial': 18700,  'Maintenance': 14350}
 }
 
-# --- 2. 爬蟲函數 (完全不做更改) ---
-def get_futures_price_selenium(driver, url):
-    """
-    使用給定的 Selenium driver 爬取指定網址的期貨即時報價。
-    這個方法能處理 JavaScript 動態載入的網頁內容。
-    """
-    try:
-        # 導航到目標網站
-        driver.get(url)
-        
-        # 顯式等待，直到價格元素被載入
-        wait = WebDriverWait(driver, 20)
-        # 更新為更穩定的 XPath，以應對網站結構變動
-        price_element = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'deal')]")))
+# --- 2. 爬蟲函數 ---
+# def get_futures_price_selenium(driver, url):
+#     """
+#     使用給定的 Selenium driver 爬取指定網址的期貨即時報價。
+#     這個方法能處理 JavaScript 動態載入的網頁內容。
+#     """
+#     try:
+#         driver.get(url)
+#         wait = WebDriverWait(driver, 20)
+#         price_element = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'deal')]")))
 
-        # 新增一個迴圈，等待直到價格內容載入
-        for _ in range(10): # 最多等待10秒
-            price_text = price_element.text.strip().replace(',', '')
-            if price_text and price_text != '---': # 檢查價格是否為有效數字
-                break
-            time_lib.sleep(1) # 暫停1秒後再檢查
-        else:
-            raise Exception("等待超時！無法在指定時間內獲取價格數據。")
+#         for _ in range(10): 
+#             price_text = price_element.text.strip().replace(',', '')
+#             if price_text and price_text != '---': 
+#                 break
+#             time_lib.sleep(1) 
+#         else:
+#             raise Exception("等待超時！無法在指定時間內獲取價格數據。")
             
-        target_price = float(price_text)
+#         target_price = float(price_text)
+#         return target_price
         
-        return target_price
-        
-    except Exception as e:
-        print(f"抓取 {url} 時發生錯誤: {e}")
-        return None
+#     except Exception as e:
+#         print(f"抓取 {url} 時發生錯誤: {e}")
+#         return None
 
 # --- 3. 核心邏輯類別 ---
-
 class FuturesManager:
-    @staticmethod
-    def load_data():
+    def __init__(self):
+        """
+        初始化：讀取 config、設定檔路徑，並建立 Google Sheets 連線
+        """
+        self.config = {}
+        self.sh = None
+        
         try:
-            # .streamlit/secrets.toml
-            # st.write(st.secrets)
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            # st.write(conn.read(worksheet=0, ttl=0))
-            # st.write(conn.read(worksheet=1, ttl=0))
-            df_portfolio = conn.read(worksheet=0, ttl=0)
-            df_asset = conn.read(worksheet=1, ttl=0)
+            # 1. 讀取 secrets.toml
+            with open(".streamlit/secrets.toml", "r") as f:
+                self.config = toml.load(f)
+
+            # 2. 獲取 gsheets 設定區塊
+            gsheets_config = self.config["connections"]["gsheets"]
+            self.spreadsheet_url = gsheets_config["spreadsheet"]
+            
+            # 3. 準備驗證用的字典 (將 spreadsheet 網址排除，只保留 GCP 憑證欄位)
+            creds_dict = {k: v for k, v in gsheets_config.items() if k != "spreadsheet"}
+            
+            # 4. 直接使用字典進行身分驗證，不再需要獨立的 .json 檔案
+            gc = gspread.service_account_from_dict(creds_dict)
+            self.sh = gc.open_by_url(self.spreadsheet_url)
+            
+        except Exception as e:
+            print(f"🔴 初始化連線或讀取 Config 失敗: {e}")
+            
+    # [修復]：移除 @staticmethod，因為需要用到 self.sh
+    def load_data(self):
+        """讀取 Google Sheets 資料"""
+        try:
+            if self.sh is None:
+                raise Exception("尚未建立試算表連線")
+
+            # 讀取 worksheet 0 (Portfolio)
+            ws_portfolio = self.sh.get_worksheet(0)
+            df_portfolio = pd.DataFrame(ws_portfolio.get_all_records())
+            
+            # 讀取 worksheet 1 (Asset)
+            ws_asset = self.sh.get_worksheet(1)
+            df_asset = pd.DataFrame(ws_asset.get_all_records())
             return df_portfolio, df_asset
         except Exception as e:
-            st.error(f"無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
-        return pd.DataFrame() # 回傳空表避免後面程式碼報錯
-        # if not os.path.exists(FUTURES_PORTFOLIO_CSV_FILENAME):
-        #     st.error(f"找不到 '{FUTURES_PORTFOLIO_CSV_FILENAME}'。")
-        #     return None, None
-        # try:
-        #     df_portfolio = pd.read_csv(FUTURES_PORTFOLIO_CSV_FILENAME)
-        #     if os.path.exists(FUTURES_ASSET_CSV_FILENAME):
-        #         df_asset = pd.read_csv(FUTURES_ASSET_CSV_FILENAME)
-        #     else:
-        #         df_asset = pd.DataFrame(columns=['日期', '總價值'])
-        #     return df_portfolio, df_asset
-        # except Exception as e:
-        #     st.error(f"讀取 CSV 錯誤: {e}")
-        #     return None, None
+            print(f"🔴 無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
+            return pd.DataFrame(), pd.DataFrame()
 
     @staticmethod
     def _generate_ticker_code(row):
@@ -116,73 +122,66 @@ class FuturesManager:
         year_code = str(row['年份'])[3] # 取年份最後一碼
         return f"{ticker_map.get(row['名稱'], '')}{month_code}{year_code}"
 
-    @staticmethod
-    def fetch_live_prices(df_portfolio):
-        """啟動 Selenium 並抓取報價"""
-        live_prices = {}
-        has_live_data = False
-        driver = None
+    # @staticmethod
+    # def fetch_live_prices(df_portfolio):
+    #     """啟動 Selenium 並抓取報價"""
+    #     live_prices = {}
+    #     has_live_data = False
+    #     driver = None
 
-        # 產生代碼與 URL 對應
-        temp_df = df_portfolio.iloc[1:].copy()
-        temp_df['代碼'] = temp_df.apply(FuturesManager._generate_ticker_code, axis=1)
-        unique_tickers = temp_df['代碼'].unique()
+    #     temp_df = df_portfolio.iloc[1:].copy()
+    #     temp_df['代碼'] = temp_df.apply(FuturesManager._generate_ticker_code, axis=1)
+    #     unique_tickers = temp_df['代碼'].unique()
 
-        # 定義 User-Agent 列表
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
-        ]
-        options = webdriver.ChromeOptions()
-        options.add_argument(f"user-agent={random.choice(user_agents)}")
-        options.add_argument('--ignore-certificate-errors')
-        options.add_argument('--allow-insecure-localhost')
-        options.add_argument('--headless')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--enable-unsafe-swiftshader')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        try:
-            #for local test
-            service = ChromeService(ChromeDriverManager().install())
-            #for streamlit remote
-            # service = ChromeService("/usr/bin/chromedriver")
-            driver = webdriver.Chrome(service=service, options=options)
-            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
-            })
-
-            # 遍歷抓取
-            for ticker in unique_tickers:
-                url = f'https://www.wantgoo.com/futures/{str(ticker).lower()}'
-                print(url)
-                price = get_futures_price_selenium(driver, url)
-                if price is not None:
-                    live_prices[ticker] = price
-                    has_live_data = True
-            
-        except Exception as e:
-            st.error(f"Selenium 啟動或抓取失敗: {e}")
-        finally:
-            if driver:
-                driver.quit()
+    #     user_agents = [
+    #         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    #         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
+    #         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
+    #     ]
+    #     options = webdriver.ChromeOptions()
+    #     options.add_argument(f"user-agent={random.choice(user_agents)}")
+    #     options.add_argument('--ignore-certificate-errors')
+    #     options.add_argument('--allow-insecure-localhost')
+    #     options.add_argument('--headless')
+    #     options.add_argument('--disable-gpu')
+    #     options.add_argument('--no-sandbox')
+    #     options.add_argument('--enable-unsafe-swiftshader')
+    #     options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    #     options.add_experimental_option('useAutomationExtension', False)
         
-        return live_prices, has_live_data
+    #     try:
+    #         service = ChromeService(ChromeDriverManager().install())
+    #         # service = ChromeService("/usr/bin/chromedriver")
+    #         driver = webdriver.Chrome(service=service, options=options)
+    #         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+    #             'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+    #         })
+
+    #         for ticker in unique_tickers:
+    #             url = f'https://www.wantgoo.com/futures/{str(ticker).lower()}'
+    #             print(url)
+    #             price = get_futures_price_selenium(driver, url)
+    #             if price is not None:
+    #                 live_prices[ticker] = price
+    #                 has_live_data = True
+            
+    #     except Exception as e:
+    #         print(f"Selenium 啟動或抓取失敗: {e}")
+    #     finally:
+    #         if driver:
+    #             driver.quit()
+        
+    #     return live_prices, has_live_data
 
     @staticmethod
-    def calculate_metrics(df_raw, fetch_live=True):
-        # 1. 提取帳戶資訊
+    def calculate_metrics(df_raw, fetch_live):
         asset_status = df_raw.iloc[0].to_dict()
         account_remain = float(asset_status.get('帳戶現金餘額', 0))
         total_cash = float(asset_status.get('總現金', 0))
 
-        # 2. 處理持倉
         df = df_raw.iloc[1:].copy()
         df['代碼'] = df.apply(FuturesManager._generate_ticker_code, axis=1)
 
-        # 3. 取得報價
         has_live_data = False
         if fetch_live:
             with st.spinner('正在啟動爬蟲抓取報價 (Selenium)...'):
@@ -190,7 +189,6 @@ class FuturesManager:
             if has_live_data:
                 df['最新報價'] = df['代碼'].map(live_prices).fillna(df['最新報價'])
 
-        # 4. 基礎計算 (點值)
         point_value_map = {'大台': 200, '小台': 50, '微台': 10}
         df['權重'] = df['名稱'].map(point_value_map)
         
@@ -198,12 +196,11 @@ class FuturesManager:
         for col in cols_to_numeric:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # 總點數 = 權重(點值) * 口數
         df['總點數'] = df['權重'] * df['口數']
         df['合約市值'] = df['最新報價'] * df['權重'] * df['口數']
         df['總成本'] = df['平均成本'] * df['權重'] * df['口數']
         df['未實現損益'] = df['合約市值'] - df['總成本']
-        # 取得 原始保證金 & 維持保證金
+        
         df['單口原始保證金'] = df['名稱'].map(lambda x: MARGIN_CONFIG.get(x, {}).get('Initial', 0)).fillna(0)
         df['單口維持保證金'] = df['名稱'].map(lambda x: MARGIN_CONFIG.get(x, {}).get('Maintenance', 0)).fillna(0)
         
@@ -211,32 +208,24 @@ class FuturesManager:
         df['總維持保證金'] = df['單口維持保證金'] * df['口數']
         
         total_margin_point = df['總點數'].sum()
-        total_margin_locked = df['總原始保證金'].sum()   # 已佔用原始保證金
-        total_maintenance_margin = df['總維持保證金'].sum() # 帳戶所需維持保證金
-        total_unrealized_pl = df['未實現損益'].sum() # 浮動損益
+        total_margin_locked = df['總原始保證金'].sum()
+        total_maintenance_margin = df['總維持保證金'].sum()
+        total_unrealized_pl = df['未實現損益'].sum()
 
-        # 權益數計算: 帳戶餘額 + 浮動損益
         current_equity = account_remain + total_unrealized_pl
-        
         total_assets = current_equity + total_cash
 
-        # 槓桿計算
         futures_total_market_value = df['合約市值'].sum()
         leverage_ratio = futures_total_market_value / total_assets if total_assets > 0 else 0
-        
-        # 資金使用率
         usage_ratio = (total_margin_locked / current_equity) * 100 if current_equity > 0 else 0
 
-        # --- [新增] 維持率計算 ---
-        # 公式: 權益數 / 總維持保證金
         if total_maintenance_margin > 0:
             maintenance_ratio = (current_equity / total_maintenance_margin) * 100
             maintenance_point = (current_equity - total_maintenance_margin) / total_margin_point
         else:
-            maintenance_ratio = 9999.0 # 無部位時顯示安全值
-            maintenance_point = 9999.0 # 無部位時顯示安全值
+            maintenance_ratio = 9999.0
+            maintenance_point = 9999.0
 
-        # 5. 槓桿建議計算 (微台)
         target_leverage = [2, 1.5, 1, 0.5]
         analysis_data = []
         
@@ -258,7 +247,6 @@ class FuturesManager:
                 })
         
         analysis_df = pd.DataFrame(analysis_data)
-
         return {
             'df': df,
             'analysis_df': analysis_df,
@@ -277,97 +265,61 @@ class FuturesManager:
             'updated_at': datetime.now(ZoneInfo("Asia/Taipei"))
         }
 
-    @staticmethod
-    def save_data(original_df_raw, result_df, current_asset_value, df_asset_history):
-        try:
-            # .streamlit/secrets.toml
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            # 1. 更新 Portfolio (回填最新報價)
-            if '最新報價' not in original_df_raw.columns:
-                original_df_raw['最新報價'] = 0.0
+    # # [修復]：移除 @staticmethod，因為需要用到 self.sh
+    # def save_data(self, original_df_raw, result_df, current_asset_value, df_asset_history):
+    #     try:
+    #         if self.sh is None:
+    #             raise Exception("尚未建立試算表連線")
+                
+    #         # 1. 更新 Portfolio (回填最新報價)
+    #         if '最新報價' not in original_df_raw.columns:
+    #             original_df_raw['最新報價'] = 0.0
             
-            original_df_raw.iloc[1:, original_df_raw.columns.get_loc('最新報價')] = result_df['最新報價'].values
-            conn.update(worksheet=0, data=original_df_raw)
+    #         original_df_raw.iloc[1:, original_df_raw.columns.get_loc('最新報價')] = result_df['最新報價'].values
 
-            # 2. 更新 Asset History
-            today_str = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y/%m/%d")
+    #         ws_portfolio = self.sh.get_worksheet(0)
+    #         ws_portfolio.clear()
+    #         # ws_portfolio.update(range_name="A1", value=[original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
+    #         ws_portfolio.update([original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
+    #         # 2. 更新 Asset History
+    #         today_str = datetime.now().strftime("%Y/%m/%d")
             
-            if today_str in df_asset_history['日期'].values:
-                df_asset_history.loc[df_asset_history['日期'] == today_str, '總價值'] = current_asset_value
-                msg = f"已更新今日 ({today_str}) 資產紀錄"
-            else:
-                new_row = pd.DataFrame({'日期': [today_str], '總價值': [current_asset_value]})
-                df_asset_history = pd.concat([df_asset_history, new_row], ignore_index=True)
-                msg = f"已新增今日 ({today_str}) 資產紀錄"
+    #         if today_str in df_asset_history['日期'].values:
+    #             df_asset_history.loc[df_asset_history['日期'] == today_str, '總價值'] = current_asset_value
+    #             msg = f"已更新今日 ({today_str}) 資產紀錄"
+    #         else:
+    #             new_row = pd.DataFrame({'日期': [today_str], '總價值': [current_asset_value]})
+    #             df_asset_history = pd.concat([df_asset_history, new_row], ignore_index=True)
+    #             msg = f"已新增今日 ({today_str}) 資產紀錄"
 
-            df_asset_history.sort_values('日期', inplace=True)
-            conn.update(worksheet=1, data=df_asset_history)
-            return True, msg
-        except Exception as e:
-            return False, f"儲存失敗: {e}"
+    #         df_asset_history.sort_values('日期', inplace=True)
+
+    #         ws_asset = self.sh.get_worksheet(1)
+    #         ws_asset.clear()
+    #         # ws_asset.update(range_name="A1", value=[df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
+    #         ws_asset.update([df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
+    #         return True, msg
+    #     except Exception as e:
+    #         return False, f"儲存失敗: {e}"
+
 
 # --- 4. Streamlit UI ---
-
 def main():
+    st.set_page_config(page_title="期貨資產報告", layout="wide", page_icon="🤖")
+    manager = FuturesManager()
     # --- 側邊欄 ---
     with st.sidebar:
-        st.header("⚙️ 設定")
-        enable_autorefresh = st.checkbox("啟用自動刷新 (30分鐘)", value=True)
-        auto_save_time = st.time_input("自動存檔時間 (收盤後)", value=time(13, 45))
-        st.divider()
-        force_save = st.button("💾 立即強制存檔", type="primary")
-
         st.markdown("---")
         st.markdown("ℹ️ **保證金參數 (原始/維持):**")
         for k, v in MARGIN_CONFIG.items():
             st.caption(f"- {k}: ${v['Initial']:,} / ${v['Maintenance']:,}")
-
-        if enable_autorefresh:
-            st_autorefresh(interval=1800000, key="futures_refresh")
-
     st.title("期貨資產")
-    
     # 載入資料
-    df_raw, df_asset_hist = FuturesManager.load_data()
-    if df_raw is None: st.stop()
-
+    df_raw, df_asset_hist = manager.load_data()
     # 計算
-    data = FuturesManager.calculate_metrics(df_raw, fetch_live=True)
+    data = FuturesManager.calculate_metrics(df_raw, fetch_live=False)
+    if data is None: st.stop()
     summary_df = data['df']
-
-    # --- 自動存檔 ---
-    try:
-        current_dt = datetime.now(ZoneInfo("Asia/Taipei"))
-        current_date_str = current_dt.strftime("%Y/%m/%d")
-        
-        is_recorded_today = False
-        if df_asset_hist is not None and not df_asset_hist.empty:
-            is_recorded_today = current_date_str in df_asset_hist['日期'].values
-
-        if (enable_autorefresh and 
-            current_dt.time() > auto_save_time and 
-            not is_recorded_today and 
-            data['has_live_data']):
-            
-            st.toast("⏳ 執行收盤自動存檔...", icon="🤖")
-            success, msg = FuturesManager.save_data(df_raw, summary_df, data['total_assets'], df_asset_hist)
-            if success:
-                st.toast(f"✅ 自動存檔完成: {msg}", icon="💾")
-                _, df_asset_hist = FuturesManager.load_data()
-    except Exception as e:
-        st.warning(f"自動存檔錯誤: {e}")
-
-    # --- 手動存檔 ---
-    if force_save:
-        if data['has_live_data']:
-            success, msg = FuturesManager.save_data(df_raw, summary_df, data['total_assets'], df_asset_hist)
-            if success:
-                st.success(msg)
-                _, df_asset_hist = FuturesManager.load_data()
-            else:
-                st.error(msg)
-        else:
-            st.warning("⚠️ 無即時報價，取消存檔。")
 
     # --- Metrics 顯示 ---
     # 改為 8 欄位以容納維持率
@@ -377,7 +329,6 @@ def main():
     cols[1].metric("總資產", f"${(data['total_assets']/ASSET_UNIT):,.1f}W")
     cols[2].metric("權益總值", f"${(data['current_equity']/ASSET_UNIT):,.1f}W", help="權益數 = 帳戶現金餘額 + 未實現損益")
     cols[3].metric("活存現金", f"${(data['total_cash']/ASSET_UNIT):,.1f}W")
-    #cols[2].metric("已佔用保證金", f"${data['total_margin_locked']:,.0f}")
     
     cols[4].metric("未實現損益", f"${(data['total_unrealized_pl']/ASSET_UNIT):,.1f}W", 
                 delta=f"{(data['total_unrealized_pl']/ASSET_UNIT):,.1f}", delta_color="inverse")

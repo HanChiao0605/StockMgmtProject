@@ -7,3 +7,6 @@ yfinance
 selenium
 webdriver-manager
 st-gsheets-connection
+gspread
+toml
+tzdata
