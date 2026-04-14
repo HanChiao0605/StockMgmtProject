@@ -19,6 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 import toml
 from zoneinfo import ZoneInfo
+# 執行指令: python -m streamlit run futures_dashboard.py
 
 # --- 1. 全域設定 ---
 EQITY_THRESHOLD = 6000
@@ -317,7 +318,7 @@ def main():
     # 載入資料
     df_raw, df_asset_hist = manager.load_data()
     # 計算
-    data = FuturesManager.calculate_metrics(df_raw, fetch_live=False)
+    data = manager.calculate_metrics(df_raw, fetch_live=False)
     if data is None: st.stop()
     summary_df = data['df']
 
