@@ -19,7 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import gspread
 import toml
 from zoneinfo import ZoneInfo
-
+#Execute cmd: python future_mgmt_task.py
 # --- 1. 全域設定 ---
 EQITY_THRESHOLD = 6000
 ASSET_UNIT = 10000 # 10k per unit
@@ -44,24 +44,15 @@ def get_futures_price_selenium(driver, url):
     這個方法能處理 JavaScript 動態載入的網頁內容。
     """
     try:
-        print(f"get_futures_price_selenium")
         driver.get(url)
-        print(f"get")
-        wait = WebDriverWait(driver, 60)
-        print(f"for wait {wait}")
-        # price_element = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'deal')]")))
-        price_element = wait.until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'deal')]")),
-            message=f"等待 60 秒失敗：在 {url} 找不到包含 deal class 的 div"
-        )
+        wait = WebDriverWait(driver, 20)
+        price_element = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'deal')]")))
         for _ in range(30): 
             price_text = price_element.text.strip().replace(',', '')
             if price_text and price_text != '---': 
                 break
             time_lib.sleep(1)
-            print(f"waiting...")
         else:   
-            print(f"等待超時！無法在指定時間內獲取價格數據。")
             raise Exception("等待超時！無法在指定時間內獲取價格數據。")
             
         target_price = float(price_text)
@@ -181,15 +172,16 @@ class FuturesManager:
         options.add_experimental_option('useAutomationExtension', False)
 
         try:
-            service = ChromeService("/usr/bin/chromedriver")
+            #for local
+            service = ChromeService(ChromeDriverManager().install())
+            #for streamlit remote
+            # service = ChromeService("/usr/bin/chromedriver")
             driver = webdriver.Chrome(service=service, options=options)
             driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
             })
-            print(f"driver: {driver}")
             for ticker in unique_tickers:
                 url = f'https://www.wantgoo.com/futures/{str(ticker).lower()}'
-                print(url)
                 price = get_futures_price_selenium(driver, url)
                 print(f"ticker: {ticker} price: {price}")
                 if price is not None:
