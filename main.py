@@ -14,11 +14,11 @@ def start_background_tasks():
     這段代碼在 Streamlit 伺服器重啟前只會執行一次。
     """
     proc_stocks = subprocess.Popen([sys.executable, '-u', "stocks_mgmt_bg_task.py"])
-    # proc_stocks_us = subprocess.Popen([sys.executable, "stocks_asset_app_US_bg.py"])
+    proc_stocks_us = subprocess.Popen([sys.executable, '-u', "us_stocks_mgmt_bg_task.py"])
     
     return {
         "台股資產監控 (Stocks)": proc_stocks,
-        # "美股資產監控 (US Stocks)": proc_stocks_us
+        "美股資產監控 (US Stocks)": proc_stocks_us
     }
 
 # --- 3. 將監控畫面包裝成一個獨立的頁面函式 ---
@@ -51,9 +51,9 @@ pg = st.navigation([
     st.Page(monitor_dashboard, title="系統主控台", icon="⚙️"),
     
     # 第二頁：期貨分析 (指向你的 UI 腳本檔案)
-    st.Page("pages/futures_dashboard.py", title="期貨分析", icon="🔮"),
-    st.Page("pages/stocks_dashboard.py", title="台股分析", icon="📈"),
-    # st.Page("pages/stocks_dashboard_US.py", title="美股分析", icon="🇺🇸"),
+    st.Page("pages/futures_dashboard.py", title="期貨分析"),
+    st.Page("pages/stocks_dashboard.py", title="台股分析"),
+    st.Page("pages/us_stocks_dashboard.py", title="美股分析"),
 ])
 
 # 5. 執行導航 (這行會根據你在側邊欄點選的項目，決定要渲染哪個頁面的內容)

@@ -125,7 +125,7 @@ class PortfolioManager:
         return None
 
     @staticmethod
-    def calculate_metrics(df_raw, fetch_live: bool = True):
+    def calculate_metrics(df_raw, fetch_live):
         """
         計算所有財務指標
         :param df_raw: 原始 DataFrame

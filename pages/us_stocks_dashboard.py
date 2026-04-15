@@ -3,25 +3,17 @@ from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import numpy as np
 from datetime import datetime, time
-import yfinance as yf
-from decimal import Decimal, getcontext, ROUND_HALF_UP, InvalidOperation
 import plotly.express as px
 import os
-from streamlit_gsheets import GSheetsConnection
-# 執行指令: python -m streamlit run stocks_asset_app.py
-# --- 1. 全域設定 ---
-getcontext().prec = 28
-STOCKS_PORTFOLIO = 'stocks_portfolio'
-STOCKS_ASSET = 'stocks_asset_value'
+import random
+import time as time_lib
+from decimal import Decimal, getcontext, ROUND_HALF_UP, InvalidOperation
 
-# 設定頁面資訊
-st.set_page_config(
-    page_title="股票持倉報告 (自動記帳版)", 
-    layout="wide", 
-    page_icon="📈"
-)
-
-# --- 2. 工具函式 (Utils) ---
+import gspread
+import toml
+from zoneinfo import ZoneInfo
+# 執行指令: python -m streamlit run stocks_dashboard.py
+# --- 1. 工具函式 (Utils) ---
 
 def to_decimal(val) -> Decimal:
     """安全地將數值轉為 Decimal，處理 NaN 或字串"""
@@ -43,42 +35,52 @@ def safe_div(a: Decimal, b: Decimal) -> Decimal:
         return Decimal('0')
     return (a / b).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
 
-# --- 3. 核心邏輯類別 (Core Logic) ---
-
+# --- 3. 核心邏輯類別 ---
 class PortfolioManager:
-    @staticmethod
-    def load_data():
+    def __init__(self):
+        """
+        初始化：讀取 config、設定檔路徑，並建立 Google Sheets 連線
+        """
+        self.config = {}
+        self.sh = None
+        
         try:
-            # .streamlit/secrets.toml
-            # st.write(st.secrets)
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            # st.write(conn.read(worksheet=0, ttl=0))
-            # st.write(conn.read(worksheet=1, ttl=0))
-            df_portfolio = conn.read(worksheet=2, ttl=0)
-            df_asset = conn.read(worksheet=3, ttl=0)
+            # 1. 讀取 secrets.toml
+            with open(".streamlit/secrets.toml", "r") as f:
+                self.config = toml.load(f)
+
+            # 2. 獲取 gsheets 設定區塊
+            gsheets_config = self.config["connections"]["gsheets"]
+            self.spreadsheet_url = gsheets_config["spreadsheet"]
+            
+            # 3. 準備驗證用的字典 (將 spreadsheet 網址排除，只保留 GCP 憑證欄位)
+            creds_dict = {k: v for k, v in gsheets_config.items() if k != "spreadsheet"}
+            
+            # 4. 直接使用字典進行身分驗證，不再需要獨立的 .json 檔案
+            gc = gspread.service_account_from_dict(creds_dict)
+            self.sh = gc.open_by_url(self.spreadsheet_url)
+            
+        except Exception as e:
+            print(f"🔴 初始化連線或讀取 Config 失敗: {e}")
+            
+    # [修復]：移除 @staticmethod，因為需要用到 self.sh
+    def load_data(self):
+        """讀取 Google Sheets 資料"""
+        try:
+            if self.sh is None:
+                raise Exception("尚未建立試算表連線")
+
+            # 讀取 worksheet 0 (Portfolio)
+            ws_portfolio = self.sh.get_worksheet(4)
+            df_portfolio = pd.DataFrame(ws_portfolio.get_all_records())
+            
+            # 讀取 worksheet 1 (Asset)
+            ws_asset = self.sh.get_worksheet(5)
+            df_asset = pd.DataFrame(ws_asset.get_all_records())
             return df_portfolio, df_asset
         except Exception as e:
-            st.error(f"無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
-        return pd.DataFrame() # 回傳空表避免後面程式碼報錯
-        # """讀取 CSV 檔案，若無檔案則回傳 None"""
-        # if not os.path.exists(STOCKS_PORTFOLIO):
-        #     st.error(f"找不到 '{STOCKS_PORTFOLIO}'，請確認檔案位置。")
-        #     return None, None
-        
-        # try:
-        #     df_portfolio = pd.read_csv(STOCKS_PORTFOLIO)
-            
-        #     # 確保資產歷史檔存在，若無則建立空的
-        #     if os.path.exists(STOCKS_ASSET):
-        #         df_asset = pd.read_csv(STOCKS_ASSET)
-        #     else:
-        #         df_asset = pd.DataFrame(columns=['日期', '總價值'])
-            
-        #     return df_portfolio, df_asset
-        # except Exception as e:
-        #     st.error(f"讀取 CSV 錯誤: {e}")
-        #     return None, None
-
+            print(f"🔴 無法讀取 Google Sheets，請檢查權限或網址。錯誤訊息: {e}")
+            return pd.DataFrame(), pd.DataFrame()
     @staticmethod
     @st.cache_data(ttl=60, show_spinner=False)
     def fetch_current_price(ticker: str):
@@ -123,7 +125,7 @@ class PortfolioManager:
         return None
 
     @staticmethod
-    def calculate_metrics(df_raw, fetch_live: bool = True):
+    def calculate_metrics(df_raw, fetch_live):
         """
         計算所有財務指標
         :param df_raw: 原始 DataFrame
@@ -203,145 +205,70 @@ class PortfolioManager:
             'total_stock_value': float(total_stock_value),
             'total_unrealized_pl': float(total_unrealized_pl),
             'has_live_data': has_live_data,
-            'updated_at': datetime.now()
+            'updated_at': datetime.now(ZoneInfo("Asia/Taipei"))
         }
 
-    @staticmethod
-    def save_data(original_df_raw, result_df, current_total_assets, df_asset_history):
-        """將最新報價與總資產寫回 CSV"""
+    # [修復]：移除 @staticmethod，因為需要用到 self.sh
+    def save_data(self, original_df_raw, result_df, current_asset_value, df_asset_history):
         try:
-            # .streamlit/secrets.toml
-            conn = st.connection("gsheets", type=GSheetsConnection)
-
-            # 1. 更新 Portfolio CSV (回填最新報價)
+            if self.sh is None:
+                raise Exception("尚未建立試算表連線")
+                
+            # 1. 更新 Portfolio (回填最新報價)
             if '最新報價' not in original_df_raw.columns:
                 original_df_raw['最新報價'] = 0.0
-
-            # 假設順序一致 (因為是用 iloc[1:] 切分)，直接回填 values
-            original_df_raw.loc[1:, '最新報價'] = result_df['最新報價'].values
-            conn.update(worksheet=2, data=original_df_raw)
-
-            # 2. 更新資產歷史 CSV
-            today_str = datetime.now().strftime("%Y/%m/%d")
             
-            # 檢查今天是否已存在
+            original_df_raw.iloc[1:, original_df_raw.columns.get_loc('最新報價')] = result_df['最新報價'].values
+
+            ws_portfolio = self.sh.get_worksheet(4)
+            ws_portfolio.clear()
+            # ws_portfolio.update(range_name="A1", value=[original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
+            ws_portfolio.update([original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
+            # 2. 更新 Asset History
+            today_str = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y/%m/%d")
+            
             if today_str in df_asset_history['日期'].values:
-                df_asset_history.loc[df_asset_history['日期'] == today_str, '總價值'] = current_total_assets
-                action_msg = f"已更新今日 ({today_str}) 資產紀錄"
+                df_asset_history.loc[df_asset_history['日期'] == today_str, '總價值'] = current_asset_value
+                msg = f"已更新今日 ({today_str}) 資產紀錄"
             else:
-                new_row = pd.DataFrame({'日期': [today_str], '總價值': [current_total_assets]})
+                new_row = pd.DataFrame({'日期': [today_str], '總價值': [current_asset_value]})
                 df_asset_history = pd.concat([df_asset_history, new_row], ignore_index=True)
-                action_msg = f"已新增今日 ({today_str}) 資產紀錄"
-            
-            df_asset_history.sort_values('日期', inplace=True)
-            conn.update(worksheet=3, data=df_asset_history)
+                msg = f"已新增今日 ({today_str}) 資產紀錄"
 
-            return True, action_msg
+            df_asset_history.sort_values('日期', inplace=True)
+
+            ws_asset = self.sh.get_worksheet(5)
+            ws_asset.clear()
+            # ws_asset.update(range_name="A1", value=[df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
+            ws_asset.update([df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
+            return True, msg
         except Exception as e:
             return False, f"儲存失敗: {e}"
 
-# --- 4. Streamlit 主程式 ---
-
+# --- 4. Streamlit UI ---
 def main():
-    # --- 側邊欄 ---
-    with st.sidebar:
-        st.header("⚙️ 設定與狀態")
-        
-        # 自動刷新開關
-        enable_autorefresh = st.checkbox("啟用自動刷新 & 自動存檔", value=True)
-        
-        # 設定自動存檔觸發時間 (預設 13:35)
-        auto_save_trigger_time = st.time_input("每日自動存檔時間 (收盤後)", value=time(13, 35))
-        
-        st.divider()
-        
-        # 手動控制
-        force_save = st.button("💾 立即強制存檔", type="primary")
-        
-        st.info(
-            f"ℹ️ **自動記帳說明**：\n"
-            f"請保持網頁開啟。\n"
-            f"當時間超過 **{auto_save_trigger_time.strftime('%H:%M')}** 且今日尚未記錄時，系統將自動寫入 CSV。"
-        )
+    st.set_page_config(page_title="台股資產報告", layout="wide", page_icon="🤖")
+    manager = PortfolioManager()
 
-        # 設定每 300 秒 (5分鐘) 刷新一次
-        if enable_autorefresh:
-            st_autorefresh(interval=300 * 1000, key="stock_refresh")
-
-    st.title("📊 股票持倉報告")
-    
-    # --- 1. 載入資料 ---
-    df_raw, df_asset_hist = PortfolioManager.load_data()
-    if df_raw is None:
-        st.stop()
-
-    # --- 2. 計算邏輯 ---
-    # 每次刷新都重新抓價計算
-    with st.spinner('正在同步市場報價...'):
-        data = PortfolioManager.calculate_metrics(df_raw, fetch_live=True)
-    
+    st.title("美股資產")
+    # 載入資料
+    df_raw, df_asset_hist = manager.load_data()
+    # 計算
+    data = manager.calculate_metrics(df_raw, fetch_live=False)
+    if data is None: st.stop()
     summary_df = data['df']
 
-    # --- 3. 自動存檔判斷邏輯 ---
-    try:
-        current_dt = datetime.now()
-        current_date_str = current_dt.strftime("%Y/%m/%d")
-        
-        # 檢查條件：
-        # 1. 啟用自動刷新
-        # 2. 現在時間 > 設定的收盤時間
-        # 3. 今天還沒被記錄在歷史 CSV 中
-        # 4. 確實有抓到即時報價 (has_live_data)
-        is_recorded_today = False
-        if df_asset_hist is not None and not df_asset_hist.empty:
-            is_recorded_today = current_date_str in df_asset_hist['日期'].values
-
-        if (enable_autorefresh and 
-            current_dt.time() > auto_save_trigger_time and 
-            not is_recorded_today and 
-            data['has_live_data']):
-            
-            st.toast(f"⏳ 收盤時間已過，正在執行自動記帳...", icon="🤖")
-            
-            success, msg = PortfolioManager.save_data(
-                df_raw, summary_df, data['total_assets'], df_asset_hist
-            )
-            
-            if success:
-                st.toast(f"✅ 自動記帳完成：{msg}", icon="💾")
-                # 重新讀取歷史檔以更新圖表
-                _, df_asset_hist = PortfolioManager.load_data()
-            else:
-                st.error(f"❌ 自動記帳失敗：{msg}")
-
-    except Exception as e:
-        st.warning(f"自動存檔檢查發生錯誤: {e}")
-
-    # --- 4. 手動存檔邏輯 ---
-    if force_save:
-        if data['has_live_data']:
-            success, msg = PortfolioManager.save_data(
-                df_raw, summary_df, data['total_assets'], df_asset_hist
-            )
-            if success:
-                st.toast(msg, icon='✅')
-                st.success(msg)
-                _, df_asset_hist = PortfolioManager.load_data()
-            else:
-                st.error(msg)
-        else:
-            st.warning("⚠️ 無法取得即時報價，為保護資料正確性，取消存檔。")
-
+    # --- Metrics 顯示 ---
     # --- 5. 顯示指標卡片 (Metrics) ---
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("總資產", f"${data['total_assets']:,.0f}")
-    col2.metric("現金部位", f"${data['total_cash']:,.0f}")
-    col3.metric("股票市值", f"${data['total_stock_value']:,.0f}")
+    col1.metric("總資產 (USD)", f"${data['total_assets']:,.0f}")
+    col2.metric("現金部位 (USD)", f"${data['total_cash']:,.0f}")
+    col3.metric("股票市值 (USD)", f"${data['total_stock_value']:,.0f}")
     
     # 未實現損益 (台股配色：inverse 代表 正紅/負綠)
     pl_val = data['total_unrealized_pl']
     col4.metric(
-        "未實現損益", 
+        "未實現損益 (USD)", 
         f"${pl_val:,.0f}", 
         delta=f"{pl_val/data['total_stock_value']:.2%}" if data['total_stock_value'] != 0 else "0%",
         delta_color="inverse"

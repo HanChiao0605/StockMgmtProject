@@ -197,7 +197,7 @@ class FuturesManager:
         return live_prices, has_live_data
 
     @staticmethod
-    def calculate_metrics(df_raw, fetch_live=True):
+    def calculate_metrics(df_raw, fetch_live):
         asset_status = df_raw.iloc[0].to_dict()
         account_remain = float(asset_status.get('帳戶現金餘額', 0))
         total_cash = float(asset_status.get('總現金', 0))

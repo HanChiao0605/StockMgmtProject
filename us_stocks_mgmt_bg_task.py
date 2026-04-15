@@ -72,11 +72,11 @@ class PortfolioManager:
                 raise Exception("尚未建立試算表連線")
 
             # 讀取 worksheet 0 (Portfolio)
-            ws_portfolio = self.sh.get_worksheet(2)
+            ws_portfolio = self.sh.get_worksheet(4)
             df_portfolio = pd.DataFrame(ws_portfolio.get_all_records())
             
             # 讀取 worksheet 1 (Asset)
-            ws_asset = self.sh.get_worksheet(3)
+            ws_asset = self.sh.get_worksheet(5)
             df_asset = pd.DataFrame(ws_asset.get_all_records())
             return df_portfolio, df_asset
         except Exception as e:
@@ -85,43 +85,18 @@ class PortfolioManager:
     @staticmethod
     @st.cache_data(ttl=60, show_spinner=False)
     def fetch_current_price(ticker: str):
-        """
-        取得單一股票價格，快取 60 秒。
-        優先順序: fast_info -> history(1d) -> 嘗試切換 .TW/.TWO
-        """
-        if not ticker: 
-            return None
-        
-        # 1. 嘗試直接抓取
-        price = PortfolioManager._get_yfinance_price(ticker)
-        
-        # 2. 若失敗，嘗試智能判斷後綴 (.TW / .TWO)
-        if price is None:
-            base_ticker = ticker.replace('.TW', '').replace('.TWO', '')
-            # 先試 .TW
-            price = PortfolioManager._get_yfinance_price(f"{base_ticker}.TW")
-            # 再試 .TWO
-            if price is None:
-                price = PortfolioManager._get_yfinance_price(f"{base_ticker}.TWO")
-        
-        return price
-
-    @staticmethod
-    def _get_yfinance_price(ticker: str):
-        """底層抓價邏輯"""
+        """取得美股價格"""
+        if not ticker: return None
         try:
             t = yf.Ticker(ticker)
-            # 方法 A: fast_info (通常最快)
+            # 方法 A: fast_info
             if hasattr(t, "fast_info"):
                 price = t.fast_info.get("last_price")
-                if price and not pd.isna(price):
-                    return float(price)
-            
-            # 方法 B: history (較慢但穩)
+                if price and not pd.isna(price): return float(price)
+            # 方法 B: history
             hist = t.history(period='1d')
-            if not hist.empty:
-                return float(hist['Close'].iloc[-1])
-        except Exception:
+            if not hist.empty: return float(hist['Close'].iloc[-1])
+        except Exception: 
             pass
         return None
 
@@ -139,11 +114,13 @@ class PortfolioManager:
         # 2. 處理持倉 (從第二列開始)
         df = df_raw.iloc[1:].copy()
         
-        # 自動產生代碼欄位 (若 CSV 只有名稱)
+        # 美股通常 CSV 的「名稱」就是代碼 (例如 AAPL)，若無代碼欄位則直接使用名稱
         if '代碼' not in df.columns:
-            df['代碼'] = df['名稱'].astype(str).apply(
-                lambda x: f"{x}.TW" if not (x.endswith('.TW') or x.endswith('.TWO')) else x
-            )
+            df['代碼'] = df['名稱'].astype(str).str.strip()
+        
+        # 確保有 '公司名稱' 欄位，若無則用代碼代替
+        if '公司名稱' not in df.columns:
+            df['公司名稱'] = df['代碼']
 
         # 3. 取得報價
         current_prices = []
@@ -221,7 +198,7 @@ class PortfolioManager:
             
             original_df_raw.iloc[1:, original_df_raw.columns.get_loc('最新報價')] = result_df['最新報價'].values
 
-            ws_portfolio = self.sh.get_worksheet(2)
+            ws_portfolio = self.sh.get_worksheet(4)
             ws_portfolio.clear()
             # ws_portfolio.update(range_name="A1", value=[original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
             ws_portfolio.update([original_df_raw.columns.tolist()] + original_df_raw.values.tolist())
@@ -238,7 +215,7 @@ class PortfolioManager:
 
             df_asset_history.sort_values('日期', inplace=True)
 
-            ws_asset = self.sh.get_worksheet(3)
+            ws_asset = self.sh.get_worksheet(5)
             ws_asset.clear()
             # ws_asset.update(range_name="A1", value=[df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
             ws_asset.update([df_asset_history.columns.tolist()] + df_asset_history.values.tolist())
@@ -250,20 +227,22 @@ class PortfolioManager:
 # --- 4. Streamlit UI ---
 def main():
     manager = PortfolioManager()
-    print(f"TW Stock背景監控進程已啟動: {datetime.now(ZoneInfo("Asia/Taipei"))}")
+    print(f"US Stock背景監控進程已啟動: {datetime.now(ZoneInfo("Asia/Taipei"))}")
 
     while True:
         try:
             current_time = datetime.now(ZoneInfo("Asia/Taipei")).time()
             # 定義時段門檻
-            day_start = time(8, 45)
-            day_end = time(13, 45)
-            night_start = time(15, 0)
-            night_end = time(5, 0)
+            #夏令21:30~04:00 冬令22:30~05:00
+            day_start = time(21, 30)
+            day_end = time(5, 0)
+            #夏令08:00 - 16:00 冬令09:00 - 17:00
+            night_start = time(8, 0)
+            night_end = time(17, 0)
 
             # 判斷邏輯
-            is_day_session = day_start <= current_time <= day_end
-            is_night_session = current_time >= night_start or current_time <= night_end
+            is_day_session = day_start >= current_time or current_time <= day_end
+            is_night_session = night_start <= current_time <= night_end
 
             if is_day_session:
                 sleeptime = 300 # 5m
