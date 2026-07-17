@@ -35,7 +35,9 @@ FUTURES_URLS = {
 MARGIN_CONFIG = {
     '大台': {'Initial': 374000, 'Maintenance': 287000},
     '小台': {'Initial': 93500,  'Maintenance': 71750},
-    '微台': {'Initial': 18700,  'Maintenance': 14350}
+    '微台': {'Initial': 18700,  'Maintenance': 14350},
+    '大0050': {'Initial': 135000,  'Maintenance': 104000},
+    '小0050': {'Initial': 13500,  'Maintenance': 10400}
 }
 
 # --- 2. 爬蟲函數 ---
@@ -114,7 +116,7 @@ class FuturesManager:
     @staticmethod
     def _generate_ticker_code(row):
         """根據 CSV 內容動態生成期貨代碼 (WTXG4 等)"""
-        ticker_map = {'大台': 'WTX', '小台': 'WMT', '微台': 'WTM'}
+        ticker_map = {'大台': 'WTX', '小台': 'WMT', '微台': 'WTM', '大0050': 'WNYF', '小0050': 'WSRF'}
         month_map = {
             1: 'F', 2: 'G', 3: 'H', 4: 'J', 5: 'K', 6: 'M',
             7: 'N', 8: 'Q', 9: 'U', 10: 'V', 11: 'X', 12: 'Z'
@@ -190,7 +192,7 @@ class FuturesManager:
             if has_live_data:
                 df['最新報價'] = df['代碼'].map(live_prices).fillna(df['最新報價'])
 
-        point_value_map = {'大台': 200, '小台': 50, '微台': 10}
+        point_value_map = {'大台': 200, '小台': 50, '微台': 10, '大0050': 10000, '小0050': 1000}
         df['權重'] = df['名稱'].map(point_value_map)
         
         cols_to_numeric = ['最新報價', '平均成本', '口數', '權重']
