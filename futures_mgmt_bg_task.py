@@ -20,6 +20,7 @@ import gspread
 import toml
 from zoneinfo import ZoneInfo
 #Execute cmd: python futures_mgmt_bg_task.py
+#.\.venv\Scripts\python.exe futures_mgmt_bg_task.py
 # --- 1. 全域設定 ---
 EQITY_THRESHOLD = 6000
 ASSET_UNIT = 10000 # 10k per unit

@@ -20,6 +20,7 @@ import gspread
 import toml
 from zoneinfo import ZoneInfo
 # 執行指令: python -m streamlit run futures_dashboard.py
+#..\.venv\Scripts\python.exe futures_mgmt_bg_task.py
 
 # --- 1. 全域設定 ---
 EQITY_THRESHOLD = 6000
@@ -229,7 +230,7 @@ class FuturesManager:
             maintenance_ratio = 9999.0
             maintenance_point = 9999.0
 
-        target_leverage = [2, 1.5, 1, 0.5]
+        target_leverage = [3, 2.75, 2.5, 2.25, 2, 1.75, 1.5, 1.25, 1, 0.5]
         analysis_data = []
         
         micro_price = 0
